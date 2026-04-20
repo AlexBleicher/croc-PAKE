@@ -1,0 +1,131 @@
+package main
+
+import (
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"github.com/schollz/pake"
+	"log"
+	"os"
+	"time"
+)
+
+type Result struct {
+	Curve    string
+	Password string
+	Run      int
+	Phase    string
+	Time     int64
+}
+
+func main() {
+	// both parties should have a weak key
+	curves := []string{"siec"}
+	passwords := generateTestPasswords()
+	var results []Result
+	for i := 0; i < len(curves); i++ {
+		log.Printf("Curve: %s", curves[i])
+		for j := 0; j < len(passwords); j++ {
+			fmt.Printf("password: %v \n", passwords[j])
+			r := testWithParams(passwords[j], curves[i])
+			results = append(results, r...)
+		}
+	}
+	saveResults("timing_results.json", results)
+}
+func generateTestPasswords() [][]byte {
+	var passwords [][]byte
+	passwords = append(passwords,
+		[]byte{0x00},
+		[]byte{0xff},
+		[]byte{0x00, 0x00},
+		[]byte{0xff, 0xff})
+	for i := 1; i <= 64; i *= 2 {
+		p := make([]byte, i)
+		for j := range p {
+			p[j] = 0x41
+		}
+		passwords = append(passwords, p)
+	}
+	p := make([]byte, 64)
+	for i := range p {
+		p[i] = 0xff
+	}
+	passwords = append(passwords, p)
+	passwords = append(passwords,
+		[]byte("test1"),
+		[]byte("test2"),
+		[]byte("password12345"))
+	return passwords
+}
+func testWithParams(pw []byte, curve string) []Result {
+	// both parties should have a weak key
+	results := make([]Result, 0)
+	weakKey := pw
+	for run := 0; run < 5; run++ {
+		start := time.Now()
+		// initialize A
+		A, err := pake.InitCurve(weakKey, 0, curve)
+		if err != nil {
+			panic(err)
+		}
+		// initialize B
+		B, err := pake.InitCurve(weakKey, 1, curve)
+		if err != nil {
+			panic(err)
+		}
+		initTime := time.Since(start).Nanoseconds()
+		results = append(results, Result{
+			Curve:    curve,
+			Password: hex.EncodeToString(pw),
+			Phase:    "init",
+			Run:      run,
+			Time:     initTime,
+		})
+		// send A's stuff to B
+		start = time.Now()
+		err = B.Update(A.Bytes())
+		if err != nil {
+			panic(err)
+		}
+		bUpdateTime := time.Since(start).Nanoseconds()
+		results = append(results, Result{
+			Curve:    curve,
+			Password: hex.EncodeToString(pw),
+			Phase:    "BUpdate",
+			Run:      run,
+			Time:     bUpdateTime,
+		})
+		// send B's stuff to A
+		start = time.Now()
+		err = A.Update(B.Bytes())
+		if err != nil {
+			panic(err)
+		}
+		aUpdateTime := time.Since(start).Nanoseconds()
+		results = append(results, Result{
+			Curve:    curve,
+			Password: hex.EncodeToString(pw),
+			Phase:    "AUpdate",
+			Run:      run,
+			Time:     aUpdateTime,
+		})
+		fmt.Println(run)
+	}
+	return results
+}
+func saveResults(filename string, results []Result) {
+	file, err := os.Create(filename)
+	if err != nil {
+		panic(err)
+	}
+	defer file.Close()
+
+	encoder := json.NewEncoder(file)
+	encoder.SetIndent("", "  ")
+
+	err = encoder.Encode(results)
+	if err != nil {
+		panic(err)
+	}
+}
